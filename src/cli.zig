@@ -77,23 +77,23 @@ fn handleInsert(engine: *qe.QueryEngine, tail: []const [:0]u8) !void {
         while (j < tail.len) : (j += 1) {
             const arg = std.mem.sliceTo(tail[j], 0);
             if (std.mem.eql(u8, arg, "--company-id")) {
-                if (j + 1 >= tail.len) return error.InvalidArguments;
+                if (j + 1 >= tail.len) return error.InvalidCompanyId;
                 company_id_opt = try parseUsize(std.mem.sliceTo(tail[j + 1], 0));
                 j += 1;
             } else if (std.mem.eql(u8, arg, "--position")) {
-                if (j + 1 >= tail.len) return error.InvalidArguments;
+                if (j + 1 >= tail.len) return error.InvalidPosition;
                 position = std.mem.sliceTo(tail[j + 1], 0);
                 j += 1;
             } else if (std.mem.eql(u8, arg, "--date")) {
-                if (j + 1 >= tail.len) return error.InvalidArguments;
+                if (j + 1 >= tail.len) return error.InvalidDate;
                 date = std.mem.sliceTo(tail[j + 1], 0);
                 j += 1;
             } else if (std.mem.eql(u8, arg, "--notes")) {
-                if (j + 1 >= tail.len) return error.InvalidArguments;
+                if (j + 1 >= tail.len) return error.InvalidNotes;
                 notes = std.mem.sliceTo(tail[j + 1], 0);
                 j += 1;
             } else {
-                return error.InvalidArguments;
+                return error.InvalidArgument;
             }
         }
         const company_id = company_id_opt orelse return error.InvalidArguments;
@@ -199,9 +199,22 @@ fn parseEventType(s: []const u8) !datas.EventType {
 }
 
 fn parseDocumentType(s: []const u8) !datas.DocumentType {
+    // Accept common aliases and case-insensitive matches
+    if (std.ascii.eqlIgnoreCase(s, "resume") or std.ascii.eqlIgnoreCase(s, "cv") or std.ascii.eqlIgnoreCase(s, "resume_doc") or std.ascii.eqlIgnoreCase(s, "resume-document"))
+        return datas.DocumentType.resume_doc;
+
+    if (std.ascii.eqlIgnoreCase(s, "cover_letter") or std.ascii.eqlIgnoreCase(s, "cover-letter") or std.ascii.eqlIgnoreCase(s, "coverletter") or std.ascii.eqlIgnoreCase(s, "cover"))
+        return datas.DocumentType.cover_letter;
+
+    if (std.ascii.eqlIgnoreCase(s, "other"))
+        return datas.DocumentType.other;
+
+    // Fallback to enum names (case-sensitive and case-insensitive)
     inline for (std.meta.fields(datas.DocumentType)) |f| {
-        if (std.mem.eql(u8, s, f.name)) return @field(datas.DocumentType, f.name);
+        if (std.mem.eql(u8, s, f.name) or std.ascii.eqlIgnoreCase(s, f.name))
+            return @field(datas.DocumentType, f.name);
     }
+
     return error.InvalidArguments;
 }
 

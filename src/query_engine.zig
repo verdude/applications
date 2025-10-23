@@ -10,8 +10,33 @@ pub const QueryEngine = struct {
     }
 
     pub fn select(self: *QueryEngine, writer: anytype) !void {
-        _ = self;
-        try writer.print("select: stub implementation (prints full DB later)\n", .{});
+        // Emit labeled fields for readability
+        // Companies
+        for (self.db.companies.items) |c| {
+            try writer.print("C|id={d}|name={s}\n", .{ c.id, c.name });
+        }
+        // Applications
+        for (self.db.applications.items) |a| {
+            try writer.print(
+                "A|id={d}|company_id={d}|position={s}|date={s}|notes={s}\n",
+                .{ a.id, a.company.id, a.position, a.date, a.notes },
+            );
+        }
+        // Events and Documents grouped by application
+        for (self.db.applications.items) |a| {
+            for (a.events) |ev| {
+                try writer.print(
+                    "E|application_id={d}|date={s}|kind={s}|notes={s}\n",
+                    .{ a.id, ev.date, @tagName(ev.kind), ev.notes },
+                );
+            }
+            for (a.documents) |doc| {
+                try writer.print(
+                    "D|application_id={d}|path={s}|kind={s}|date={s}|submitted={s}|notes={s}\n",
+                    .{ a.id, doc.path, @tagName(doc.kind), doc.date, if (doc.submitted) "true" else "false", doc.notes },
+                );
+            }
+        }
     }
 
     pub fn insertCompany(self: *QueryEngine, name: []const u8) !usize {
@@ -111,4 +136,28 @@ test "query engine: update requires existing application" {
     var engine = QueryEngine.init(gpa, &db);
     try std.testing.expectError(error.ApplicationNotFound, engine.addEvent(5, "2025-10-22", datas.EventType.applied, "x"));
     try std.testing.expectError(error.ApplicationNotFound, engine.addDocument(5, "/tmp/x", datas.DocumentType.cover_letter, "2025-10-21", false, "y"));
+}
+
+test "query engine: select prints full DB in line format" {
+    const gpa = std.testing.allocator;
+    var db = datas.Database.init(gpa);
+    defer db.deinit();
+
+    var engine = QueryEngine.init(gpa, &db);
+    const cid = try engine.insertCompany("Acme");
+    const app_id = try engine.insertApplication(cid, "SWE", "2025-10-21", "n");
+    try engine.addEvent(app_id, "2025-10-22", datas.EventType.applied, "submitted");
+    try engine.addDocument(app_id, "/tmp/resume.pdf", datas.DocumentType.resume_doc, "2025-10-21", true, "v1");
+
+    var buf: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    try engine.select(w);
+
+    const out = stream.getWritten();
+    const expected1 = "C|id=0|name=Acme\nA|id=0|company_id=0|position=SWE|date=2025-10-21|notes=n\n";
+    try std.testing.expect(std.mem.startsWith(u8, out, expected1));
+    // Expect some E and D lines present with labels
+    try std.testing.expect(std.mem.containsAtLeast(u8, out, 1, "E|application_id=0|date=2025-10-22|kind=applied|notes=submitted\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, out, 1, "D|application_id=0|path=/tmp/resume.pdf|kind=resume_doc|date=2025-10-21|submitted=true|notes=v1\n"));
 }
