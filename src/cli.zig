@@ -46,6 +46,8 @@ pub fn run() !void {
         try handleInsert(&engine, args[(i + 1)..]);
     } else if (std.mem.eql(u8, cmd, "update")) {
         try handleUpdate(&engine, args[(i + 1)..]);
+    } else if (std.mem.eql(u8, cmd, "pack")) {
+        try handlePack(&engine, args[(i + 1)..]);
     } else {
         try printUsage();
         return;
@@ -181,6 +183,97 @@ fn handleUpdate(engine: *qe.QueryEngine, tail: []const [:0]u8) !void {
     return error.InvalidArguments;
 }
 
+fn handlePack(engine: *qe.QueryEngine, tail: []const [:0]u8) !void {
+    const gpa = std.heap.page_allocator;
+
+    // Default output archive name
+    var out_path: []const u8 = "documents.tar.gz";
+    var j: usize = 0;
+    while (j < tail.len) : (j += 1) {
+        const arg = std.mem.sliceTo(tail[j], 0);
+        if (std.mem.eql(u8, arg, "--out")) {
+            if (j + 1 >= tail.len) return error.InvalidArguments;
+            out_path = std.mem.sliceTo(tail[j + 1], 0);
+            j += 1;
+        } else return error.InvalidArguments;
+    }
+
+    // Collect all unique document paths from DB, skipping empty paths.
+    var paths = try std.ArrayList([]const u8).initCapacity(gpa, engine.db.applications.items.len * 2);
+    defer paths.deinit(gpa);
+    var seen = std.StringHashMap(void).init(gpa);
+    defer seen.deinit();
+
+    var missing_count: usize = 0;
+    // Iterate applications and documents
+    for (engine.db.applications.items) |a| {
+        for (a.documents) |doc| {
+            if (doc.path.len == 0) continue;
+            if (seen.contains(doc.path)) continue;
+            try seen.put(doc.path, {});
+            // Check existence; if present append, otherwise count as missing
+            std.fs.cwd().access(doc.path, .{}) catch |err| switch (err) {
+                error.FileNotFound => {
+                    missing_count += 1;
+                    continue;
+                },
+                else => return err,
+            };
+            try paths.append(gpa, doc.path);
+        }
+    }
+
+    // If there are no existing files to pack, print message and return ok.
+    if (paths.items.len == 0) {
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        const w = &stdout_writer.interface;
+        try w.print("no documents found to pack (missing={d})\n", .{missing_count});
+        try w.flush();
+        return;
+    }
+
+    // Build command: tar -czf <out_path> <paths...>
+    var argv = try std.ArrayList([]const u8).initCapacity(gpa, 3 + paths.items.len);
+    defer argv.deinit(gpa);
+    try argv.append(gpa, "tar");
+    try argv.append(gpa, "-czf");
+    try argv.append(gpa, out_path);
+    for (paths.items) |path| {
+        try argv.append(gpa, path);
+    }
+
+    var child = std.process.Child.init(argv.items, gpa);
+    child.stdin_behavior = .Ignore;
+    // Inherit stderr to surface any tar errors directly
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
+    try child.spawn();
+
+    const term = try child.wait();
+
+    var stdout_buffer2: [1024]u8 = undefined;
+    var stdout_writer2 = std.fs.File.stdout().writer(&stdout_buffer2);
+    const w2 = &stdout_writer2.interface;
+
+    switch (term) {
+        .Exited => |code| {
+            if (code == 0) {
+                try w2.print("packed {d} file(s) to {s}. missing={d}\n", .{ paths.items.len, out_path, missing_count });
+            } else {
+                try w2.print("tar exited with code {d}.\n", .{code});
+            }
+        },
+        .Signal => |sig| {
+            try w2.print("tar terminated by signal {d}.\n", .{sig});
+        },
+        else => {
+            try w2.print("tar failed to run.\n", .{});
+        },
+    }
+    try w2.flush();
+}
+
 fn parseUsize(s: []const u8) !usize {
     return try std.fmt.parseInt(usize, s, 10);
 }
@@ -223,7 +316,7 @@ fn printUsage() !void {
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const w = &stdout_writer.interface;
     try w.print(
-        "Usage:\n  applications [--db <path>] select\n  applications [--db <path>] insert company <name>\n  applications [--db <path>] insert application --company-id <id> --position <text> --date <date> [--notes <text>]\n  applications [--db <path>] update <application-id> event --date <date> --type <EventType> [--notes <text>]\n  applications [--db <path>] update <application-id> document --path <path> --type <DocumentType> --date <date> --submitted <true|false> [--notes <text>]\n",
+        "Usage:\n  applications [--db <path>] select\n  applications [--db <path>] insert company <name>\n  applications [--db <path>] insert application --company-id <id> --position <text> --date <date> [--notes <text>]\n  applications [--db <path>] update <application-id> event --date <date> --type <EventType> [--notes <text>]\n  applications [--db <path>] update <application-id> document --path <path> --type <DocumentType> --date <date> --submitted <true|false> [--notes <text>]\n  applications [--db <path>] pack [--out <tar.gz>]\n",
         .{},
     );
     try w.flush();
